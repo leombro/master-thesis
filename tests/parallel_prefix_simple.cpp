@@ -28,47 +28,8 @@ void printvvect(std::vector<std::vector<T>> vv) {
     std::cout << "]" << std::endl;
 }
 
-template <typename T>
-struct is_vector : std::false_type {
-    std::string name = typeid(T).name();
-};
-template <typename T>
-struct is_vector<std::vector<T>> : std::true_type {
-    std::string name = typeid(T).name();
-};
-template <typename T>
-struct is_vector<T[]> : std::true_type {
-    std::string name = typeid(T).name();
-};
-
-bool compare_vector_type(const std::string& a, const std::string& b, std::true_type) {
-    return a == b;
-}
-
-bool compare_vector_type(const std::string&, const std::string&, std::false_type) {
-    return false;
-}
-
-template <typename T>
-bool compare_vector_type(const std::string &a) {
-    is_vector<T> m{};
-    return compare_vector_type(a, m.name, m);
-}
-
 int main() {
 
-    std::vector<int> acc;
-    acc.resize(5);
-    acc[3] = 2;
-    std::pair<std::pair<int, int>, int> ppp{{1, 2}, 3};
-
-    std::cout << compare_vector_type<int>(typeid(std::vector<int>).name()) << std::endl;
-    std::cout << compare_vector_type<std::vector<int>>(typeid(int).name()) << std::endl;
-    std::cout << compare_vector_type<int[]>(typeid(int).name()) << std::endl;
-    std::cout << compare_vector_type<int>(typeid(int[]).name()) << std::endl;
-    std::cout << compare_vector_type<std::string>(typeid(int).name()) << std::endl;
-    std::cout << ppp.first.first << " " << ppp.first.second << " " << ppp.second << std::endl;
-    printvect(acc);
     std::vector<std::vector<int>> input(4);
     static std::vector<int> intern(25);
     std::fill(intern.begin(), intern.end(), 1);

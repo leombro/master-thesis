@@ -303,6 +303,7 @@ private:
                             task->first = Task::RECEIVE_DATA;
                             task->second.first = in->data[0];
                             task->second.second = curr;
+                            last_received = in->data[0];
                             lb->ff_send_out_to(task, 0);
                             break;
                         }
