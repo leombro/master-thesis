@@ -32,7 +32,6 @@ int main() {
     std::cout << "starting" << std::endl;
     bsp<std::vector<int>> bulk(input);
     bulk.add_superstep(sstep);
-    bulk.finalize();
 
     std::vector<std::vector<int>> result{bulk.run()};
 

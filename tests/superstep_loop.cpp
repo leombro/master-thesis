@@ -28,7 +28,6 @@ int main() {
     bsp<int, int> bulk(input);
     bulk.add_superstep(first_sstep);
     bulk.add_superstep(second_sstep);
-    bulk.finalize();
 
     std::vector<int> result{bulk.run()};
 

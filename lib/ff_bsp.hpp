@@ -51,7 +51,7 @@ typedef enum {
 
 
 class bsp_send {
-private:
+protected:
     std::vector<std::shared_ptr<void>> data;
     std::vector<node_id> to;
     send_type type = INTERNAL;
@@ -61,8 +61,9 @@ private:
     friend class bsp;
 
 
-    template <typename T>
-    friend bsp_send bsp_multisend(std::vector<T>& data, std::vector<T>& destinations);
+    /*template <typename T>
+    friend bsp_send bsp_multisend(std::vector<T>& data, std::vector<T>& destinations);*/
+
     template <typename T>
     friend bsp_send bsp_any_send(T& what);
     template <typename T>
@@ -94,7 +95,27 @@ public:
 
 };
 
-template <typename T>
+class bsp_multisend: public bsp_send {
+
+public:
+
+    bsp_multisend() = delete;
+
+    template <typename T>
+    bsp_multisend(T& element, node_id dest): bsp_send(MULTI) {
+        data.emplace_back(std::make_shared<T>(element));
+        to.emplace_back(dest);
+    }
+
+    template <typename T>
+    void add(T& element, node_id dest) {
+        data.emplace_back(std::make_shared<T>(element));
+        to.emplace_back(dest);
+    }
+
+};
+
+/*template <typename T>
 bsp_send bsp_multisend(std::vector<T>& data, std::vector<T>& destinations) {
     if (data.size() == 0 || destinations.size() == 0)
         throw std::runtime_error{"Data and destination vectors cannot be empty"};
@@ -106,7 +127,7 @@ bsp_send bsp_multisend(std::vector<T>& data, std::vector<T>& destinations) {
     }
     toRet.to = std::move(destinations);
     return toRet;
-}
+}*/
 
 template <typename T>
 bsp_send bsp_any_send(T& what) {
@@ -130,7 +151,7 @@ bsp_send bsp_return(T& what) {
 }
 
 template <typename T1>
-using bsp_processor = std::function<bsp_send(T1, node_id)>;
+using bsp_function = std::function<bsp_send(T1, node_id)>;
 
 template <typename T>
 using bsp_step_selector = std::optional<std::function<sstep_id(T, sstep_id)>>;
@@ -138,7 +159,7 @@ using bsp_step_selector = std::optional<std::function<sstep_id(T, sstep_id)>>;
 template <typename in_t, typename out_t = in_t>
 class bsp_superstep {
 protected:
-    std::vector<bsp_processor<in_t>> functions;
+    std::vector<bsp_function<in_t>> functions;
     bsp_step_selector<out_t> selector;
 
     size_t size;
@@ -150,11 +171,11 @@ public:
 
     bsp_superstep() = delete;
 
-    explicit bsp_superstep(std::vector<bsp_processor<in_t>>& computation): functions{computation}, selector({}) {
+    explicit bsp_superstep(std::vector<bsp_function<in_t>>& computation): functions{computation}, selector({}) {
         size = functions.size();
     };
 
-    bsp_superstep(std::vector<bsp_processor<in_t>>& computation, std::function<sstep_id(out_t, sstep_id)> sel):
+    bsp_superstep(std::vector<bsp_function<in_t>>& computation, std::function<sstep_id(out_t, sstep_id)> sel):
         functions{computation}, selector{sel} {
         size = functions.size();
     }
@@ -303,7 +324,6 @@ private:
                             task->first = Task::RECEIVE_DATA;
                             task->second.first = in->data[0];
                             task->second.second = curr;
-                            last_received = in->data[0];
                             lb->ff_send_out_to(task, 0);
                             break;
                         }
@@ -411,7 +431,7 @@ private:
 
     };
 
-    std::vector<std::vector<bsp_processor<std::shared_ptr<void>>>> superstep_functions;
+    std::vector<std::vector<bsp_function<std::shared_ptr<void>>>> superstep_functions;
     std::vector<std::function<sstep_id(std::shared_ptr<void>, sstep_id)>> superstep_selectors;
     std::vector<std::function<std::shared_ptr<void>(std::vector<std::shared_ptr<void>>&)>> superstep_transform_accumulator;
     std::vector<pair<typeinfo>> superstep_types;
@@ -419,7 +439,6 @@ private:
     std::vector<in_t> input_data;
     unsigned n_supersteps{0};
     unsigned max_n_processors{0};
-    bool initialized{false};
     bool last_sstep_default_selector{true};
     std::string last_typename{typeid(in_t).name()};
 
@@ -448,9 +467,6 @@ private:
         if (sstep.size == 0) {
             throw std::runtime_error{"Empty superstep"};
         }
-        if (initialized) {
-            throw std::runtime_error{"Process was already finalized"};
-        }
         if (n_supersteps == 0 && input_data.size() > 0 && (sstep.functions.size() != input_data.size())) {
             throw std::runtime_error{"First superstep's processors must be of the same cardinality as input data"};
         }
@@ -461,7 +477,7 @@ private:
         }
         last_typename = typeid(T2).name();
         superstep_types.emplace_back(pair<typeinfo>{get_typeinfo<T1>(), get_typeinfo<T2>()});
-        std::vector<bsp_processor<std::shared_ptr<void>>> functions;
+        std::vector<bsp_function<std::shared_ptr<void>>> functions;
         for (const auto& fun: sstep.functions) {
             functions.emplace_back([&fun](const std::shared_ptr<void>& in, node_id id) -> bsp_send {
                 auto in_ptr = reinterpret_cast<T1*>(in.get());
@@ -536,18 +552,11 @@ public:
         return add_superstep_internal(sstep, m);
     }
 
-    void finalize() {
-        if (initialized) throw std::runtime_error{"Process was already finalized"};
+    std::vector<out_t> run() {
         if (n_supersteps == 0) throw std::runtime_error{"Must include at least one superstep"};
         if (input_data.empty()) throw std::runtime_error{"Input data is empty"};
-        if (last_typename != typeid(out_t).name())
+        if (last_typename != typeid(out_t).name()) {
             throw std::runtime_error{"Last superstep output type doesn't match BSP output type"};
-        initialized = true;
-    }
-
-    std::vector<out_t> run() {
-        if (!initialized) {
-            if (!initialized) throw std::runtime_error{"BSP structure not initialized"};
         }
         std::vector<std::unique_ptr<ff::ff_node>> workers;
         for (size_t i{0}; i < max_n_processors; ++i) {

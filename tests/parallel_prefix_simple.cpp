@@ -38,7 +38,7 @@ int main() {
 
     printvvect(input);
 
-    std::vector<bsp_processor<std::vector<int>>> phase1funcs(4);
+    std::vector<bsp_function<std::vector<int>>> phase1funcs(4);
     std::fill(phase1funcs.begin(), phase1funcs.end(), [](std::vector<int> in, node_id node) -> bsp_send {
         int count = 0;
         std::ostringstream oss;
@@ -52,7 +52,7 @@ int main() {
         return bsp_any_send(count);
     });
 
-    std::vector<bsp_processor<std::vector<int>>> phase2func(1);
+    std::vector<bsp_function<std::vector<int>>> phase2func(1);
     phase2func[0] = [](std::vector<int> in, node_id node) -> bsp_send {
         int acc = 0;
         std::cout << "middle step [ ";
@@ -67,7 +67,7 @@ int main() {
         return bsp_all_send(toRet);
     };
 
-    std::vector<bsp_processor<std::pair<std::vector<int>, std::vector<int>>>> phase3funcs(4);
+    std::vector<bsp_function<std::pair<std::vector<int>, std::vector<int>>>> phase3funcs(4);
     std::fill(phase3funcs.begin(), phase3funcs.end(), [](std::pair<std::vector<int>, std::vector<int>> in, node_id node) -> bsp_send {
         int myReduc = in.first[node];
         std::ostringstream oss;
