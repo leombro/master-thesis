@@ -13,6 +13,8 @@
 #include <ff/ff.hpp>
 
 #include <iostream>
+#include <sstream>
+
 #define LOG(x) std::cout << x << std::endl
 
 typedef unsigned node_id;
@@ -233,153 +235,6 @@ private:
         }
     };
 
-    struct bsp_master: ff::ff_node_t<bsp_send, bsp_task> {
-
-        ff::ff_loadbalancer* lb = nullptr;
-        std::vector<in_t> input;
-        bsp<in_t, out_t>* super;
-        std::shared_ptr<void> last_received;
-        sstep_id curr = -1;
-        size_t n_nodes;
-        std::vector<int> barrier_count;
-        bool aggregate = false;
-
-        std::vector<std::vector<out_t>> output_temp;
-
-        bsp_master(ff::ff_loadbalancer* const loba, std::vector<in_t>& vec, bsp<in_t, out_t>* sup): lb{loba}, input{std::move(vec)}, super{sup}, n_nodes{sup->max_n_processors} {
-            output_temp.resize(n_nodes);
-            barrier_count.resize(n_nodes, -1);
-        }
-
-        std::vector<out_t> get_output() {
-            std::vector<out_t> results;
-            for (const auto& vec: output_temp) {
-                for (const auto& el: vec) {
-                    results.emplace_back(el);
-                }
-            }
-            return results;
-        }
-
-        bsp_task* svc(bsp_send* in) override {
-            if (in == (bsp_send*)EOS) return EOS;
-            if (in == nullptr && curr == -1) {
-                curr = 0;
-                for (size_t i{0}; i < n_nodes; ++i) {
-                    auto to_send = new bsp_task;
-                    to_send->first = Task::FIRST_COMPUTATION;
-                    to_send->second.first = std::make_shared<in_t>(input[i]);
-                    to_send->second.second = curr;
-                    barrier_count[i] = 1;
-                    lb->ff_send_out_to(to_send, i);
-                }
-            }  else {
-                if (in) {
-                    switch (in->type) {
-                        case send_type::INTERNAL: {
-                            break;
-                        }
-                        case send_type::CONTINUE: {
-                            barrier_count[in->sender] -= 1;
-                            if (!aggregate) aggregate = in->additional_data;
-                            if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
-                            if (std::all_of(barrier_count.begin(), barrier_count.end(), [](int i){return i == 0;})) {
-                                auto prev = curr;
-                                curr = super->superstep_selectors[curr](last_received, curr+1);
-                                if (curr == STOP) {
-                                    for (size_t i{0}; i < n_nodes; ++i) {
-                                        auto to_send = new bsp_task;
-                                        to_send->first = Task::FLUSH;
-                                        to_send->second.second = curr;
-                                        lb->ff_send_out_to(to_send, i);
-                                    }
-                                } else {
-                                    if (curr != prev + 1 && super->superstep_types[prev].second != super->superstep_types[curr].first) {
-                                        if (!super->superstep_types[curr].first.backward_compatible(super->superstep_types[prev].second))
-                                            throw std::runtime_error{"Consecutive superstep types are not compatible"};
-                                    }
-                                    for (size_t i{0}; i < n_nodes; ++i) {
-                                        auto task = new bsp_task;
-                                        barrier_count[i] += 1;
-                                        task->first = Task::BEGIN_SUPERSTEP;
-                                        task->second.second = curr;
-                                        task->must_aggregate = aggregate;
-                                        lb->ff_send_out_to(task, i);
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                        case send_type::SINGLE: {
-                            barrier_count[in->sender] -= 1;
-                            if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
-                            barrier_count[in->to[0]] += 1;
-                            auto task = new bsp_task;
-                            task->first = Task::RECEIVE_DATA;
-                            task->second.first = in->data[0];
-                            last_received = in->data[0];
-                            task->second.second = in->sender;
-                            lb->ff_send_out_to(task, in->to[0]);
-                            break;
-                        }
-                        case send_type::ANY: {
-                            barrier_count[in->sender] -= 1;
-                            if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
-                            barrier_count[0] += 1;
-                            auto task = new bsp_task;
-                            task->first = Task::RECEIVE_DATA_AGGR;
-                            task->second.first = in->data[0];
-                            task->second.second = in->sender;
-                            lb->ff_send_out_to(task, 0);
-                            break;
-                        }
-                        case send_type::ALL: {
-                            barrier_count[in->sender] -= 1;
-                            if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
-                            last_received = in->data[0];
-                            for (size_t i{0}; i < n_nodes; ++i) {
-                                barrier_count[i] += 1;
-                                auto task = new bsp_task;
-                                task->first = Task::RECEIVE_DATA;
-                                task->second.first = in->data[0];
-                                task->second.second = in->sender;
-                                lb->ff_send_out_to(task, i);
-                            }
-                            break;
-                        }
-                        case send_type::MULTI: {
-                            barrier_count[in->sender] -= 1;
-                            if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
-                            last_received = in->data[0];
-                            for (size_t i{0}; i < in->data.size(); ++i) {
-                                barrier_count[in->to[i]] += 1;
-                                auto task = new bsp_task;
-                                task->first = Task::RECEIVE_DATA;
-                                task->second.first = in->data[i];
-                                task->second.second = in->sender;
-                                lb->ff_send_out_to(task, in->to[i]);
-                            }
-                            break;
-                        }
-                        case send_type::FLUSH: {
-                            if (in->data[0] != nullptr) {
-                                auto vec = reinterpret_cast<std::vector<std::shared_ptr<void>>*>(in->data[0].get());
-                                for (const auto& el: *vec) {
-                                    auto elem = reinterpret_cast<out_t*>(el.get());
-                                    output_temp[in->sender].emplace_back(*elem);
-                                }
-                            }
-                            lb->ff_send_out_to(EOS, in->sender);
-                        }
-                    }
-                    delete in;
-                }
-            }
-            return GO_ON;
-        }
-
-    };
-
     struct bsp_node: ff::ff_node_t<bsp_task, bsp_send> {
 
         node_id id;
@@ -387,8 +242,17 @@ private:
         size_t nproc;
         size_t count = 0;
         std::vector<std::shared_ptr<void>> stored_msg;
+        std::vector<std::shared_ptr<void>> new_msg;
         std::vector<pair<node_id, size_t>> nodes;
         bool aggregate = false;
+        std::ostringstream debug;
+
+        bool put(const std::shared_ptr<void>& what, node_id from) {
+            new_msg.emplace_back(what);
+            nodes.emplace_back(std::pair(from, count++));
+            debug << "emplaced " << what << " from " << from << " count is " << (count - 1) << std::endl;
+            return new_msg.size() > 1;
+        }
 
         bsp_node(node_id _id, bsp<in_t, out_t>* _super): id{_id}, super{_super}, nproc{_super->max_n_processors} {
         };
@@ -421,15 +285,34 @@ private:
                         toRet = new bsp_send(send_type::CONTINUE);
                         toRet->sender = id;
                     } else {
+                        stored_msg = std::move(new_msg);
+                        auto new_nodes = std::move(nodes);
+                        count = 0;
+                        aggregate = false;
                         auto fn = super->superstep_functions[in->second.second][id];
                         if (!aggregate) aggregate = in->must_aggregate;
                         if (stored_msg.size() == 1 && !aggregate) {
                             toRet = new bsp_send(std::move(fn(stored_msg.at(0), id)));
                         } else {
-                            std::sort(nodes.begin(), nodes.end(), [](const pair<node_id, size_t>& i, const pair<node_id, size_t>& j){return (i.first < j.first);});
+                            std::stable_sort(new_nodes.begin(), new_nodes.end(), [](const pair<node_id, size_t>& i, const pair<node_id, size_t>& j){return (i.first < j.first);});
                             std::vector<std::shared_ptr<void>> ordered;
-                            for (const auto& el: nodes) {
-                                ordered.emplace_back(stored_msg.at(el.second));
+                            for (const auto& el: new_nodes) {
+                                try {
+                                    ordered.emplace_back(stored_msg.at(el.second));
+                                } catch (const std::out_of_range& e) {
+                                    std::cout << "i am " << id << ", follows debug" << std::endl;
+                                    std::cout << debug.str();
+                                    std::cout << "nodes is [ ";
+                                    for (const auto& ele: nodes) std::cout << "(" << ele.first << ", " << ele.second << ") ";
+                                    std::cout << "] (count " << nodes.size() << ")" << std::endl;
+                                    std::cout << "stored_msg is [ ";
+                                    for (const auto& ele: stored_msg) std::cout << ele << " ";
+                                    std::cout << "] (count " << stored_msg.size() << ")" << std::endl;
+                                    std::cout << "new_nodes is [ ";
+                                    for (const auto& ele: new_nodes) std::cout << "(" << ele.first << ", " << ele.second << ") ";
+                                    std::cout << "] (count " << new_nodes.size() << ")" << std::endl;
+                                    throw e;
+                                }
                             }
                             std::shared_ptr<void> mes = super->superstep_transform_accumulator[in->second.second](ordered);
                             toRet = new bsp_send(std::move(fn(mes, id)));
@@ -437,8 +320,8 @@ private:
                         toRet->sender = id;
                         stored_msg.clear();
                         nodes.clear();
+                        debug.str("");
                         count = 0;
-                        aggregate = false;
                     }
                     break;
                 case Task::FLUSH: {
@@ -450,6 +333,155 @@ private:
             }
             delete in;
             return toRet;
+        }
+
+    };
+
+    struct bsp_master: ff::ff_node_t<bsp_send, bsp_task> {
+
+        ff::ff_loadbalancer* lb = nullptr;
+        std::vector<in_t> input;
+        bsp<in_t, out_t>* super;
+        std::shared_ptr<void> last_received;
+        sstep_id curr = -1;
+        size_t n_nodes;
+        std::vector<int> barrier_count;
+        std::vector<bsp_node*> workers;
+        bool aggregate = false;
+
+        std::vector<std::vector<out_t>> output_temp;
+
+        bsp_master(ff::ff_loadbalancer* const loba,
+                std::vector<in_t>& vec,
+                bsp<in_t, out_t>* sup,
+                const std::vector<bsp_node*>& _workers):
+                    lb{loba},
+                    input{std::move(vec)},
+                    super{sup},
+                    workers{_workers},
+                    n_nodes{sup->max_n_processors} {
+            output_temp.resize(n_nodes);
+            barrier_count.resize(n_nodes, -1);
+        }
+
+        std::vector<out_t> get_output() {
+            std::vector<out_t> results;
+            for (const auto& vec: output_temp) {
+                for (const auto& el: vec) {
+                    results.emplace_back(el);
+                }
+            }
+            return results;
+        }
+
+        void checkBarrier() {
+            if (std::all_of(barrier_count.begin(), barrier_count.end(), [](int i){return i <= 0;})) {
+                auto prev = curr;
+                curr = super->superstep_selectors[curr](last_received, curr+1);
+                if (curr == STOP) {
+                    for (size_t i{0}; i < n_nodes; ++i) {
+                        auto to_send = new bsp_task;
+                        to_send->first = Task::FLUSH;
+                        to_send->second.second = curr;
+                        lb->ff_send_out_to(to_send, i);
+                    }
+                } else {
+                    if (curr != prev + 1 && super->superstep_types[prev].second != super->superstep_types[curr].first) {
+                        if (!super->superstep_types[curr].first.backward_compatible(super->superstep_types[prev].second))
+                            throw std::runtime_error{"Consecutive superstep types are not compatible"};
+                    }
+                    for (size_t i{0}; i < n_nodes; ++i) {
+                        auto task = new bsp_task;
+                        barrier_count[i] = 1;
+                        task->first = Task::BEGIN_SUPERSTEP;
+                        task->second.second = curr;
+                        task->must_aggregate = aggregate;
+                        lb->ff_send_out_to(task, i);
+                    }
+                }
+            }
+        }
+
+        bsp_task* svc(bsp_send* in) override {
+            if (in == (bsp_send*)EOS) return EOS;
+            if (in == nullptr && curr == -1) {
+                curr = 0;
+                for (size_t i{0}; i < n_nodes; ++i) {
+                    auto to_send = new bsp_task;
+                    to_send->first = Task::FIRST_COMPUTATION;
+                    to_send->second.first = std::make_shared<in_t>(input[i]);
+                    to_send->second.second = curr;
+                    barrier_count[i] = 1;
+                    lb->ff_send_out_to(to_send, i);
+                }
+            }  else {
+                if (in) {
+                    switch (in->type) {
+                        case send_type::INTERNAL: {
+                            break;
+                        }
+                        case send_type::CONTINUE: {
+                            barrier_count[in->sender] -= 1;
+                            //if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
+                            checkBarrier();
+                            break;
+                        }
+                        case send_type::SINGLE: {
+                            barrier_count[in->sender] -= 1;
+                            //if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
+                            bool b = workers[in->to[0]]->put(in->data[0], in->sender);
+                            if (!aggregate) aggregate = b;
+                            last_received = in->data[0];
+                            checkBarrier();
+                            break;
+                        }
+                        case send_type::ANY: {
+                            barrier_count[in->sender] -= 1;
+                            //if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
+                            bool b = workers[0]->put(in->data[0], in->sender);
+                            if (!aggregate) aggregate = b;
+                            last_received = in->data[0];
+                            checkBarrier();
+                            break;
+                        }
+                        //TODO must aggregate
+                        case send_type::ALL: {
+                            barrier_count[in->sender] -= 1;
+                            //if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
+                            for (size_t i{0}; i < n_nodes; ++i) {
+                                bool b = workers[i]->put(in->data[0], in->sender);
+                                if (!aggregate) aggregate = b;
+                            }
+                            last_received = in->data[0];
+                            checkBarrier();
+                            break;
+                        }
+                        case send_type::MULTI: {
+                            barrier_count[in->sender] -= 1;
+                            //if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
+                            for (size_t i{0}; i < in->data.size(); ++i) {
+                                bool b = workers[in->to[i]]->put(in->data[i], in->sender);
+                                if (!aggregate) aggregate = b;
+                            }
+                            last_received = in->data[0];
+                            checkBarrier();
+                            break;
+                        }
+                        case send_type::FLUSH: {
+                            if (in->data[0] != nullptr) {
+                                auto vec = reinterpret_cast<std::vector<std::shared_ptr<void>>*>(in->data[0].get());
+                                for (const auto& el: *vec) {
+                                    auto elem = reinterpret_cast<out_t*>(el.get());
+                                    output_temp[in->sender].emplace_back(*elem);
+                                }
+                            }
+                            lb->ff_send_out_to(EOS, in->sender);
+                        }
+                    }
+                    delete in;
+                }
+            }
+            return GO_ON;
         }
 
     };
@@ -581,15 +613,26 @@ public:
         if (last_typename != typeid(out_t).name()) {
             throw std::runtime_error{"Last superstep output type doesn't match BSP output type"};
         }
-        std::vector<std::unique_ptr<ff::ff_node>> workers;
+        std::vector<bsp_node*> workers_node;
+        std::vector<ff::ff_node*> workers_ff;
         for (size_t i{0}; i < max_n_processors; ++i) {
-            workers.emplace_back(std::make_unique<bsp_node>(i, this));
+            auto t = new bsp_node(i, this);
+            workers_node.push_back(t);
+            workers_ff.push_back(t);
         }
-        ff::ff_Farm<> farm(std::move(workers));
-        bsp_master master{farm.getlb(), input_data, this};
+        ff::ff_farm farm(workers_ff);
+        //std::vector<std::unique_ptr<bsp_node>> workers;
+        //for (size_t i{0}; i < max_n_processors; ++i) {
+        //    workers.emplace_back(std::make_unique<bsp_node>(i, this));
+        //}
+        //ff::ff_Farm<> farm(std::move(workers));
+        bsp_master master{farm.getlb(), input_data, this, workers_node};
         farm.add_emitter(master);
         farm.wrap_around();
         farm.run_and_wait_end();
+        for (int i{0}; i < workers_node.size(); ++i) {
+            delete workers_node[i];
+        }
         return master.get_output();
     }
 
