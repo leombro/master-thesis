@@ -10,9 +10,7 @@
 #include <functional>
 #include <climits>
 #include <optional>
-#include <ff/node.hpp>
-#include <ff/farm.hpp>
-#include <ff/multinode.hpp>
+#include <ff/ff.hpp>
 
 #include <iostream>
 #define LOG(x) std::cout << x << std::endl
@@ -31,9 +29,15 @@ namespace {
     typedef enum {
         BEGIN_SUPERSTEP,
         RECEIVE_DATA,
+        RECEIVE_DATA_AGGR,
         FIRST_COMPUTATION,
         FLUSH
     } Task;
+    struct bsp_task {
+        Task first;
+        std::pair<std::shared_ptr<void>, sstep_id> second;
+        bool must_aggregate;
+    };
 }
 
 template <typename A, typename B = A>
@@ -56,6 +60,7 @@ protected:
     std::vector<node_id> to;
     send_type type = INTERNAL;
     node_id sender = 0;
+    bool additional_data = false;
 
     template <typename, typename>
     friend class bsp;
@@ -228,8 +233,6 @@ private:
         }
     };
 
-    using bsp_task = pair<Task, pair<std::shared_ptr<void>, sstep_id>>;
-
     struct bsp_master: ff::ff_node_t<bsp_send, bsp_task> {
 
         ff::ff_loadbalancer* lb = nullptr;
@@ -239,6 +242,7 @@ private:
         sstep_id curr = -1;
         size_t n_nodes;
         std::vector<int> barrier_count;
+        bool aggregate = false;
 
         std::vector<std::vector<out_t>> output_temp;
 
@@ -277,6 +281,7 @@ private:
                         }
                         case send_type::CONTINUE: {
                             barrier_count[in->sender] -= 1;
+                            if (!aggregate) aggregate = in->additional_data;
                             if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
                             if (std::all_of(barrier_count.begin(), barrier_count.end(), [](int i){return i == 0;})) {
                                 auto prev = curr;
@@ -298,6 +303,7 @@ private:
                                         barrier_count[i] += 1;
                                         task->first = Task::BEGIN_SUPERSTEP;
                                         task->second.second = curr;
+                                        task->must_aggregate = aggregate;
                                         lb->ff_send_out_to(task, i);
                                     }
                                 }
@@ -312,7 +318,7 @@ private:
                             task->first = Task::RECEIVE_DATA;
                             task->second.first = in->data[0];
                             last_received = in->data[0];
-                            task->second.second = curr;
+                            task->second.second = in->sender;
                             lb->ff_send_out_to(task, in->to[0]);
                             break;
                         }
@@ -321,9 +327,9 @@ private:
                             if (barrier_count[in->sender] < 0) throw std::runtime_error{"Incorrect number of ACK received from " + std::to_string(in->sender)};
                             barrier_count[0] += 1;
                             auto task = new bsp_task;
-                            task->first = Task::RECEIVE_DATA;
+                            task->first = Task::RECEIVE_DATA_AGGR;
                             task->second.first = in->data[0];
-                            task->second.second = curr;
+                            task->second.second = in->sender;
                             lb->ff_send_out_to(task, 0);
                             break;
                         }
@@ -336,7 +342,7 @@ private:
                                 auto task = new bsp_task;
                                 task->first = Task::RECEIVE_DATA;
                                 task->second.first = in->data[0];
-                                task->second.second = curr;
+                                task->second.second = in->sender;
                                 lb->ff_send_out_to(task, i);
                             }
                             break;
@@ -350,7 +356,7 @@ private:
                                 auto task = new bsp_task;
                                 task->first = Task::RECEIVE_DATA;
                                 task->second.first = in->data[i];
-                                task->second.second = curr;
+                                task->second.second = in->sender;
                                 lb->ff_send_out_to(task, in->to[i]);
                             }
                             break;
@@ -378,9 +384,13 @@ private:
 
         node_id id;
         bsp<in_t, out_t>* super;
+        size_t nproc;
+        size_t count = 0;
         std::vector<std::shared_ptr<void>> stored_msg;
+        std::vector<pair<node_id, size_t>> nodes;
+        bool aggregate = false;
 
-        bsp_node(node_id _id, bsp<in_t, out_t>* _super): id{_id}, super{_super} {
+        bsp_node(node_id _id, bsp<in_t, out_t>* _super): id{_id}, super{_super}, nproc{_super->max_n_processors} {
         };
 
         bsp_send* svc(bsp_task* in) override {
@@ -397,10 +407,14 @@ private:
                         toRet->sender = id;
                     }
                     break;
+                case Task::RECEIVE_DATA_AGGR:
+                    aggregate = true;
                 case Task::RECEIVE_DATA:
                     stored_msg.emplace_back(in->second.first);
+                    nodes.emplace_back(std::pair(in->second.second, count++));
                     toRet = new bsp_send(send_type::CONTINUE);
                     toRet->sender = id;
+                    toRet->additional_data = (stored_msg.size() > 1);
                     break;
                 case Task::BEGIN_SUPERSTEP:
                     if (super->superstep_functions[in->second.second].size() <= id) {
@@ -408,14 +422,23 @@ private:
                         toRet->sender = id;
                     } else {
                         auto fn = super->superstep_functions[in->second.second][id];
-                        if (stored_msg.size() == 1) {
+                        if (!aggregate) aggregate = in->must_aggregate;
+                        if (stored_msg.size() == 1 && !aggregate) {
                             toRet = new bsp_send(std::move(fn(stored_msg.at(0), id)));
                         } else {
-                            std::shared_ptr<void> mes = super->superstep_transform_accumulator[in->second.second](stored_msg);
+                            std::sort(nodes.begin(), nodes.end(), [](const pair<node_id, size_t>& i, const pair<node_id, size_t>& j){return (i.first < j.first);});
+                            std::vector<std::shared_ptr<void>> ordered;
+                            for (const auto& el: nodes) {
+                                ordered.emplace_back(stored_msg.at(el.second));
+                            }
+                            std::shared_ptr<void> mes = super->superstep_transform_accumulator[in->second.second](ordered);
                             toRet = new bsp_send(std::move(fn(mes, id)));
                         }
                         toRet->sender = id;
                         stored_msg.clear();
+                        nodes.clear();
+                        count = 0;
+                        aggregate = false;
                     }
                     break;
                 case Task::FLUSH: {

@@ -12,12 +12,12 @@ int main() {
     std::vector<int> input{1};
 
     std::vector<std::function<bsp_send(int, node_id)>> phase1 = {[](int a, node_id id){
-        return bsp_any_send(a);
+        return bsp_send(a, 0);
     }};
 
     std::vector<std::function<bsp_send(int, node_id)>> phase2 = {[](int a, node_id id){
         int b = a+1;
-        return bsp_any_send(b);
+        return bsp_send(b, 0);
     }};
 
     bsp_superstep<int, int> first_sstep(phase1);
