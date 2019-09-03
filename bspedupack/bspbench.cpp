@@ -16,8 +16,8 @@ std::vector<double> leastsquares(int h0, int h1, double t[]) {
         sumth += t[h]*h;
     }
 
-    double sumh = (h1*h1 - h0*h0 + h1 + h0)/2.0;
-    double sumhh = (h1 * (h1+1) * (2*h1+1) - (h0 - 1) * h0 * (2*h0 - 1))/6.0;
+    double sumh = static_cast<double>(h1*h1 - h0*h0 + h1 + h0)/2.0;
+    double sumhh = static_cast<double>(h1 * (h1+1) * (2*h1+1) - (h0 - 1) * h0 * (2*h0 - 1))/6.0;
 
     if (abs(nh) > abs(sumh)) {
         double a = sumh/nh;
