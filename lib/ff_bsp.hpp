@@ -97,21 +97,6 @@ public:
 
     }
 
-
-};
-
-class bsp_multisend: public bsp_send {
-
-public:
-
-    bsp_multisend() = delete;
-
-    template <typename T>
-    bsp_multisend(T& element, node_id dest): bsp_send(MULTI) {
-        data.emplace_back(std::make_shared<T>(element));
-        to.emplace_back(dest);
-    }
-
     template <typename T>
     void add(T& element, node_id dest) {
         data.emplace_back(std::make_shared<T>(element));
@@ -119,20 +104,6 @@ public:
     }
 
 };
-
-/*template <typename T>
-bsp_send bsp_multisend(std::vector<T>& data, std::vector<T>& destinations) {
-    if (data.size() == 0 || destinations.size() == 0)
-        throw std::runtime_error{"Data and destination vectors cannot be empty"};
-    if (data.size() != destinations.size())
-        throw std::runtime_error{"Data and destination vectors must have same number of elements"};
-    bsp_send toRet{MULTI};
-    for (const auto& el: data) {
-        toRet.data.emplace_back(std::make_shared<T>(el));
-    }
-    toRet.to = std::move(destinations);
-    return toRet;
-}*/
 
 template <typename T>
 bsp_send bsp_any_send(T& what) {
@@ -149,14 +120,7 @@ bsp_send bsp_all_send(T& what) {
 }
 
 template <typename T>
-bsp_send bsp_return(T& what) {
-    bsp_send toRet{send_type::FLUSH};
-    toRet.data.emplace_back(std::make_shared<T>(what));
-    return toRet;
-}
-
-template <typename T1>
-using bsp_function = std::function<bsp_send(T1, node_id)>;
+using bsp_function = std::function<bsp_send(T, node_id)>;
 
 template <typename T>
 using bsp_step_selector = std::optional<std::function<sstep_id(T, sstep_id)>>;
@@ -178,11 +142,13 @@ public:
 
     explicit bsp_superstep(std::vector<bsp_function<in_t>>& computation): functions{computation}, selector({}) {
         size = functions.size();
+        if (size == 0) throw std::runtime_error("Number of processors in the superstep cannot be zero");
     };
 
     bsp_superstep(std::vector<bsp_function<in_t>>& computation, std::function<sstep_id(out_t, sstep_id)> sel):
         functions{computation}, selector{sel} {
         size = functions.size();
+        if (size == 0) throw std::runtime_error("Number of processors in the superstep cannot be zero");
     }
 };
 
