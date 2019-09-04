@@ -173,7 +173,7 @@ int main(int argc, char* argv[]) {
         int i = 0;
         return bsp_send(i, dests[id][0]);
     });
-    bsp_superstep<int> step4_h1loop(h1loop, [&, nh = &h_iter, end = &end_time](int, sstep_id id){
+    bsp_superstep<int> step4_h1loop(h1loop, [&, nh = &h_iter](int, sstep_id id){
         *nh += 1;
         if (*nh <= n_iters) return id;
         else {
@@ -183,11 +183,13 @@ int main(int argc, char* argv[]) {
     }, &end_time);
 
     std::vector<bsp_function<int>> dummyvect(n_procs); // for type correctness
-    std::fill(dummyvect.begin(), dummyvect.end(), [&](int, node_id id){
+    std::fill(dummyvect.begin(), dummyvect.end(), [&, begin = &begin_time, end = &end_time](int, node_id id){
         if (id == 0) {
             auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end_time - begin_time).count();
             double time = static_cast<double>(elapsed)/MEGA;
             t[0] = (time * r) / n_iters;
+            std::cout << "times are " << std::chrono::duration_cast<std::chrono::milliseconds>(begin->time_since_epoch()).count()
+                    << " " << std::chrono::duration_cast<std::chrono::milliseconds>(end->time_since_epoch()).count() << std::endl;
             std::cout << "time is " << time << " r is " << r << " Niter is " << n_iters << std::endl;
             std::cout <<  "Time of 1-relation= " << time/n_iters << " sec= " << t[0] << " flops" << std::endl;
         }
@@ -220,7 +222,7 @@ int main(int argc, char* argv[]) {
         for (i = 1; i < h; i++) ms.add(i, dests[id][i]);
         return ms;
     });
-    bsp_superstep<std::vector<int>, int> step7_hxloop(hxloop, [&, end = &end_time, begin = &begin_time, iterations = &h_iter, hparam = &h](int, sstep_id id){
+    bsp_superstep<std::vector<int>, int> step7_hxloop(hxloop, [&, end = &end_time, iterations = &h_iter, hparam = &h](int, sstep_id id){
         *iterations += 1;
         if (*hparam == maxH) std::cout << "h is " << *hparam << " iter is " << *iterations << std::endl;
         if (*iterations > n_iters) {
@@ -233,7 +235,6 @@ int main(int argc, char* argv[]) {
             if (*hparam > maxH) return id+1;
             else {
                 *iterations = 0;
-                *begin = std::chrono::high_resolution_clock::now();
                 return id-1;
             }
         } else return id;

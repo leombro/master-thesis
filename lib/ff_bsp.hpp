@@ -139,13 +139,13 @@ public:
 
     bsp_superstep() = delete;
 
-    explicit bsp_superstep(std::vector<bsp_function<in_t>>& computation, bsp_time* time = nullptr): functions{computation}, selector({}) {
+    explicit bsp_superstep(std::vector<bsp_function<in_t>>& computation, bsp_time* time = nullptr): functions{computation}, selector({}), timeptr{time} {
         size = functions.size();
         if (size == 0) throw std::runtime_error("Number of processors in the superstep cannot be zero");
     };
 
     bsp_superstep(std::vector<bsp_function<in_t>>& computation, std::function<sstep_id(out_t, sstep_id)> sel, bsp_time* time = nullptr):
-        functions{computation}, selector{sel} {
+        functions{computation}, selector{sel}, timeptr{time} {
         size = functions.size();
         if (size == 0) throw std::runtime_error("Number of processors in the superstep cannot be zero");
     }
@@ -209,17 +209,17 @@ private:
         size_t nproc = 0;
         size_t count = 0;
         bool aggregate = false;
-        std::vector<std::shared_ptr<void>>* receive_memory;
-        std::vector<std::shared_ptr<void>>* swap = nullptr;
+        std::vector<std::shared_ptr<void>>* receive_memory[2];
+        int mem_pointer = 0;
         bsp_master* coordinator;
 
         bsp_node(node_id _id, bsp<in_t, out_t>* _super): id{_id}, super{_super}, nproc{_super->max_n_processors} {
-            receive_memory = new std::vector<std::shared_ptr<void>>[nproc];
+            receive_memory[0] = new std::vector<std::shared_ptr<void>>[nproc];
         };
 
         ~bsp_node() override {
-            if (swap != nullptr) delete[] swap;
-            delete[] receive_memory;
+            delete[] receive_memory[0];
+            delete[] receive_memory[1];
         }
 
         void set_coordinator(bsp_master* coord) {
@@ -227,7 +227,7 @@ private:
         }
 
         bool put(std::shared_ptr<void> what, node_id from) {
-            receive_memory[from].emplace_back(what);
+            receive_memory[mem_pointer][from].emplace_back(what);
             count++;
             if (count > 1) aggregate = true;
             return aggregate;
@@ -240,10 +240,11 @@ private:
             switch (in->first) {
                 case Task::FIRST_COMPUTATION:
                     if (super->superstep_functions[in->second].size() > id) {
-                        swap = receive_memory;
-                        receive_memory = new std::vector<std::shared_ptr<void>>[nproc];
+                        mem_pointer = 1 - mem_pointer;
+                        receive_memory[mem_pointer] = new std::vector<std::shared_ptr<void>>[nproc];
                         auto fn = super->superstep_functions[in->second][id];
-                        auto returned = fn(swap[0][0], id);
+                        auto arg = receive_memory[1 - mem_pointer][0][0];
+                        auto returned = fn(arg, id);
                         count = 0;
                         aggregate = false;
                         coordinator->request_write();
@@ -256,8 +257,8 @@ private:
                                 coordinator->put(what, id, dest);
                             }
                         }
-                        delete[] swap;
-                        swap = nullptr;
+                        delete[] receive_memory[1 - mem_pointer];
+                        receive_memory[1 - mem_pointer] = nullptr;
                     } else {
                         coordinator->request_write();
                     }
@@ -265,15 +266,15 @@ private:
                 case Task::BEGIN_SUPERSTEP_AGGR:
                     aggregate = true;
                 case Task::BEGIN_SUPERSTEP:
-                    swap = receive_memory;
-                    receive_memory = new std::vector<std::shared_ptr<void>>[nproc];
+                    mem_pointer = 1 - mem_pointer;
+                    receive_memory[mem_pointer] = new std::vector<std::shared_ptr<void>>[nproc];
                     if (super->superstep_functions[in->second].size() > id) {
                         auto fn = super->superstep_functions[in->second][id];
                         bsp_send* returned = nullptr;
                         if (aggregate) {
                             std::vector<std::shared_ptr<void>> ordered;
                             for (size_t i{0}; i < nproc; ++i) {
-                                for (auto el: swap[i]) {
+                                for (auto el: receive_memory[1-mem_pointer][i]) {
                                     ordered.emplace_back(el);
                                 }
                             }
@@ -281,9 +282,11 @@ private:
                             returned = new bsp_send(std::move(fn(msg, id)));
                         } else {
                             for (size_t i{0}; i < nproc && returned == nullptr; ++i) {
-                                std::string e = std::to_string(swap[i].size());
-                                if (swap[i].size() == 1) {
-                                    returned = new bsp_send(std::move(fn(swap[i][0], id)));
+                                std::string e = std::to_string(receive_memory[1-mem_pointer][i].size());
+                                if (receive_memory[1-mem_pointer][i].size() == 1) {
+                                    auto data = receive_memory[1-mem_pointer][i][0];
+                                    auto res = fn(data, id);
+                                    returned = new bsp_send(std::move(res));
                                 }
                             }
                             if (returned == nullptr) throw std::runtime_error("Incorrect calculation");
@@ -306,19 +309,19 @@ private:
                         aggregate = false;
                         coordinator->request_write();
                     }
-                    delete[] swap;
-                    swap = nullptr;
+                    delete[] receive_memory[1 - mem_pointer];
+                    receive_memory[1 - mem_pointer] = nullptr;
                     break;
                 case Task::FLUSH:
-                    swap = receive_memory;
+                    mem_pointer = 1 - mem_pointer;
                     count = 0;
-                    receive_memory = nullptr;
+                    receive_memory[mem_pointer] = nullptr;
                     for (size_t i{0}; i < nproc; ++i) {
-                        for (const auto& el: swap[i]) {
+                        for (const auto& el: receive_memory[1-mem_pointer][i]) {
                             coordinator->put_output(el, id);
                         }
                     }
-                    delete[] swap;
+                    delete[] receive_memory[1-mem_pointer];
                     return EOS;
                 default:
                     throw std::runtime_error("Unknown task type");
@@ -508,8 +511,8 @@ private:
                             }
                         }
                     }
+                    delete in;
                 }
-                delete in;
             }
             return GO_ON;
         }

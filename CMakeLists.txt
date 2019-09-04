@@ -9,6 +9,7 @@ add_executable(shrinking_ds lib/ff_bsp.hpp tests/shrinking_ds.cpp)
 add_executable(parallel_prefix lib/ff_bsp.hpp lib/bsp_pprefix.h tests/prefix_sum.cpp)
 add_executable(bench bspedupack/bspbench.cpp lib/ff_bsp.hpp)
 add_executable(aggregate tests/aggregate.cpp lib/ff_bsp.hpp)
+add_executable(provah tests/provah.cpp)
 
 include_directories(lib)
 link_libraries(pthread)
