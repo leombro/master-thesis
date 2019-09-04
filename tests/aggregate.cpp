@@ -12,7 +12,7 @@ int main() {
     std::vector<bsp_function<int>> v1(10);
     std::fill(v1.begin(), v1.end(), [](int, node_id id) {
         int a = 5;
-        return bsp_send(a, 6);
+        return bsp_send(a, 6, false);
     });
     bsp_superstep<int, int> step1(v1);
 
@@ -23,7 +23,7 @@ int main() {
         for (const auto& i: v) oss << i << " ";
         oss << std::endl;
         std::string r = oss.str();
-        return bsp_send(r, id);
+        return bsp_send(r, id, false);
     });
     bsp_superstep<std::vector<int>, std::string> step2(v2, [](auto, auto){return STOP;});
 

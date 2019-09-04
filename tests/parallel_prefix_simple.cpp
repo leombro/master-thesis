@@ -60,7 +60,7 @@ int main() {
         }
         oss << "node " << node << " radians are " << startrad;
         std::cout << oss.str() << std::endl;
-        return bsp_any_send(count);
+        return bsp_send(count, 0, false);
     });
 
     std::vector<bsp_function<std::vector<int>>> phase2func(1);
@@ -74,8 +74,13 @@ int main() {
             std::cout << el << " ";
         }
         std::cout << "]" << std::endl;
-        auto toRet = std::pair{in, (node == 0? a : (node == 1? b : (node == 2? c : d)))};
-        return bsp_all_send(toRet);
+        auto tr = std::pair{in, a};
+        bsp_send to_return(tr, 0, false); // todo: ask why
+        for (int i{1}; i < 4; i++) {
+            auto toRet = std::pair{in, (i == 0 ? a : (i == 1 ? b : (i == 2 ? c : d)))};
+            to_return.add(toRet, i, false);
+        }
+        return to_return;
     };
 
     std::vector<bsp_function<std::pair<std::vector<int>, std::vector<int>>>> phase3funcs(4);
@@ -92,7 +97,7 @@ int main() {
         }
         oss << "]";
         std::cout << oss.str() << std::endl;
-        return bsp_send(in.second, node);
+        return bsp_send(in.second, node, false);
     });
 
     bsp_superstep<std::vector<int>, int> step1(phase1funcs);

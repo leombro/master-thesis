@@ -105,10 +105,10 @@ int main(int argc, char* argv[]) {
                 z[i] -= beta * x[i];
         }
         auto b = std::chrono::high_resolution_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
-        double seconds = elapsed/1000.0;
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+        double seconds = elapsed/MEGA;
 
-        return bsp_any_send(seconds);
+        return bsp_send(seconds, 0);
     });
     bsp_superstep<int, double> step1_daxpy(daxpy);
 
@@ -137,7 +137,7 @@ int main(int argc, char* argv[]) {
             std::cout << "minimum time is 0" << std::endl;
         }
         int dummy = 0;
-        return bsp_all_send(dummy);
+        return bsp_send(dummy, 0, true);
     };
     bsp_superstep<std::vector<double>, int> step2_timecalc(time_comp, [&, ni = &n](int, sstep_id id){
         sstep_id next;
@@ -152,7 +152,7 @@ int main(int argc, char* argv[]) {
 
     std::vector<int> dests[n_procs];
     int h_iter = 0;
-    std::chrono::time_point<std::chrono::high_resolution_clock> begin_time, end_time;
+    bsp_time begin_time, end_time;
     double t[maxH+1];
 
     std::vector<bsp_function<int>> h1prep(n_procs);
@@ -166,10 +166,7 @@ int main(int argc, char* argv[]) {
         int dum = 0;
         return bsp_send(dum, id);
     });
-    bsp_superstep<int> step3_h1prep(h1prep, [&, start = &begin_time](int, sstep_id id){
-        *start = std::chrono::high_resolution_clock::now();
-        return id+1;
-    });
+    bsp_superstep<int> step3_h1prep(h1prep, &begin_time);
 
     std::vector<bsp_function<int>> h1loop(n_procs);
     std::fill(h1loop.begin(), h1loop.end(), [&](int, node_id id) {
@@ -178,21 +175,20 @@ int main(int argc, char* argv[]) {
     });
     bsp_superstep<int> step4_h1loop(h1loop, [&, nh = &h_iter, end = &end_time](int, sstep_id id){
         *nh += 1;
-        std::cout << *nh << std::endl;
         if (*nh <= n_iters) return id;
         else {
-            *end = std::chrono::high_resolution_clock::now();
             *nh = 0;
             return id + 1;
         }
-    });
+    }, &end_time);
 
     std::vector<bsp_function<int>> dummyvect(n_procs); // for type correctness
     std::fill(dummyvect.begin(), dummyvect.end(), [&](int, node_id id){
         if (id == 0) {
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - begin_time).count();
-            double time = static_cast<double>(elapsed)/1000.0;
+            auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end_time - begin_time).count();
+            double time = static_cast<double>(elapsed)/MEGA;
             t[0] = (time * r) / n_iters;
+            std::cout << "time is " << time << " r is " << r << " Niter is " << n_iters << std::endl;
             std::cout <<  "Time of 1-relation= " << time/n_iters << " sec= " << t[0] << " flops" << std::endl;
         }
         std::vector<int> d;
@@ -214,32 +210,30 @@ int main(int argc, char* argv[]) {
         std::vector<int> dummy;
         return bsp_send(dummy, id);
     });
-    bsp_superstep<std::vector<int>> step6_hxprep(hxprep, [start = &begin_time](const std::vector<int>&, sstep_id id){
-        *start = std::chrono::high_resolution_clock::now();
-        return id+1;
-    });
+    bsp_superstep<std::vector<int>> step6_hxprep(hxprep, &begin_time);
 
 
     std::vector<bsp_function<std::vector<int>>> hxloop(n_procs);
     std::fill(hxloop.begin(), hxloop.end(), [&](const std::vector<int>&, node_id id){
         int i = 0;
-        bsp_multisend ms(i, dests[id][0]);
+        bsp_send ms(i, dests[id][0]);
         for (i = 1; i < h; i++) ms.add(i, dests[id][i]);
         return ms;
     });
-    bsp_superstep<std::vector<int>, int> step7_hxloop(hxloop, [&, end = &end_time, iterations = &h_iter, hparam = &h](int, sstep_id id){
+    bsp_superstep<std::vector<int>, int> step7_hxloop(hxloop, [&, end = &end_time, begin = &begin_time, iterations = &h_iter, hparam = &h](int, sstep_id id){
         *iterations += 1;
         if (*hparam == maxH) std::cout << "h is " << *hparam << " iter is " << *iterations << std::endl;
         if (*iterations > n_iters) {
             *end = std::chrono::high_resolution_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - begin_time).count();
-            double time = static_cast<double>(elapsed)/1000.0;
+            auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end_time - begin_time).count();
+            double time = static_cast<double>(elapsed)/MEGA;
             t[*hparam] = (time * r) / n_iters;
             std::cout <<  "Time of " << *hparam << "-relation= " << time/n_iters << " sec= " << t[*hparam] << " flops" << std::endl;
             *hparam += 1;
             if (*hparam > maxH) return id+1;
             else {
                 *iterations = 0;
+                *begin = std::chrono::high_resolution_clock::now();
                 return id-1;
             }
         } else return id;
